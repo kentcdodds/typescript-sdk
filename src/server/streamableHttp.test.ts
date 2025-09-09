@@ -738,19 +738,36 @@ describe("StreamableHTTPServerTransport", () => {
 
     // Get both responses
     const [response1, response2] = await Promise.all([req1, req2]);
-    const reader1 = response1.body?.getReader();
-    const reader2 = response2.body?.getReader();
+    
+    // Both should be JSON responses for single requests
+    expect(response1.headers.get("content-type")).toBe("application/json");
+    expect(response2.headers.get("content-type")).toBe("application/json");
 
-    // Read responses from each stream (requires each receives its specific response)
-    const { value: value1 } = await reader1!.read();
-    const text1 = new TextDecoder().decode(value1);
-    expect(text1).toContain('"id":"req-1"');
-    expect(text1).toContain('"tools"');  // tools/list result
+    // Read JSON responses
+    const result1 = await response1.json();
+    expect(result1).toMatchObject({
+      jsonrpc: "2.0",
+      result: expect.objectContaining({
+        tools: expect.arrayContaining([
+          expect.objectContaining({ name: "greet" })
+        ])
+      }),
+      id: "req-1"
+    });
 
-    const { value: value2 } = await reader2!.read();
-    const text2 = new TextDecoder().decode(value2);
-    expect(text2).toContain('"id":"req-2"');
-    expect(text2).toContain('Hello, Connection2');  // tools/call result
+    const result2 = await response2.json();
+    expect(result2).toMatchObject({
+      jsonrpc: "2.0",
+      result: expect.objectContaining({
+        content: expect.arrayContaining([
+          expect.objectContaining({
+            type: "text",
+            text: "Hello, Connection2"
+          })
+        ])
+      }),
+      id: "req-2"
+    });
   });
 
   it("should keep stream open after sending server notifications", async () => {
@@ -1186,15 +1203,18 @@ describe("StreamableHTTPServerTransport with pre-parsed body", () => {
     });
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("content-type")).toBe("text/event-stream");
+    expect(response.headers.get("content-type")).toBe("application/json");
 
-    const reader = response.body?.getReader();
-    const { value } = await reader!.read();
-    const text = new TextDecoder().decode(value);
-
-    // Verify the response used the pre-parsed body
-    expect(text).toContain('"id":"preparsed-1"');
-    expect(text).toContain('"tools"');
+    const result = await response.json();
+    expect(result).toMatchObject({
+      jsonrpc: "2.0",
+      result: expect.objectContaining({
+        tools: expect.arrayContaining([
+          expect.objectContaining({ name: "greet" })
+        ])
+      }),
+      id: "preparsed-1"
+    });
   });
 
   it("should handle pre-parsed batch messages", async () => {
@@ -1249,15 +1269,18 @@ describe("StreamableHTTPServerTransport with pre-parsed body", () => {
     });
 
     expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/json");
 
-    const reader = response.body?.getReader();
-    const { value } = await reader!.read();
-    const text = new TextDecoder().decode(value);
-
-    // Should have processed the pre-parsed body
-    expect(text).toContain('"id":"preparsed-wins"');
-    expect(text).toContain('"tools"');
-    expect(text).not.toContain('"ignored-id"');
+    const result = await response.json();
+    expect(result).toMatchObject({
+      jsonrpc: "2.0",
+      result: expect.objectContaining({
+        tools: expect.arrayContaining([
+          expect.objectContaining({ name: "greet" })
+        ])
+      }),
+      id: "preparsed-wins"
+    });
   });
 });
 

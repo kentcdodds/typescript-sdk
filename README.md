@@ -385,6 +385,43 @@ import { getDisplayName } from "@modelcontextprotocol/sdk/shared/metadataUtils.j
 const displayName = getDisplayName(tool);
 ```
 
+### HTTP Response Handling
+
+MCP servers can throw `Response` objects from request handlers to send direct HTTP responses with custom status codes and headers. This is particularly useful for OAuth 2.1 compliant authorization flows.
+
+```typescript
+// Tool that requires authentication
+server.registerTool(
+  "protected-action",
+  {
+    title: "Protected Action",
+    description: "Performs an action that requires authentication",
+    inputSchema: { action: z.string() }
+  },
+  async ({ action }) => {
+    // Check authentication
+    if (!isAuthenticated()) {
+      throw new Response('Unauthorized', {
+        status: 401,
+        statusText: 'Unauthorized',
+        headers: { 
+          'WWW-Authenticate': 'Bearer realm="api.example.com", error="invalid_token", error_description="The access token provided is expired, revoked, malformed, or invalid for other reasons"' 
+        }
+      });
+    }
+    
+    // Perform the action
+    return {
+      content: [{ type: "text", text: `Action completed: ${action}` }]
+    };
+  }
+);
+```
+
+**Transport Behavior:**
+- **HTTP transports** (StreamableHTTPServerTransport, SSEServerTransport): Send actual HTTP responses with status codes and headers
+- **Non-HTTP transports** (InMemoryTransport, StdioServerTransport): Convert to descriptive JSON-RPC errors with HTTP details preserved
+
 ### Sampling
 
 MCP servers can request LLM completions from connected clients that support sampling.

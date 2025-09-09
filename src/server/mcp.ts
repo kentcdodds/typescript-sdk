@@ -174,6 +174,11 @@ export class McpServer {
           try {
             result = await Promise.resolve(cb(args, extra));
           } catch (error) {
+            // If it's a Response object, let the protocol handle it
+            if (error instanceof Response) {
+              throw error; // Re-throw to let protocol handle HTTP response
+            }
+            
             result = {
               content: [
                 {
@@ -189,6 +194,11 @@ export class McpServer {
           try {
             result = await Promise.resolve(cb(extra));
           } catch (error) {
+            // If it's a Response object, let the protocol handle it
+            if (error instanceof Response) {
+              throw error; // Re-throw to let protocol handle HTTP response
+            }
+            
             result = {
               content: [
                 {

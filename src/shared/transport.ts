@@ -82,4 +82,29 @@ export interface Transport {
    * Sets the protocol version used for the connection (called when the initialize response is received).
    */
   setProtocolVersion?: (version: string) => void;
+
+  /**
+   * Indicates if this transport supports HTTP-specific features like Response objects.
+   * This allows request handlers to throw Response objects for direct HTTP responses.
+   */
+  readonly supportsHttpResponses?: boolean;
+
+  /**
+   * Sends an HTTP response directly to the client.
+   * Only implemented by HTTP-capable transports (StreamableHTTPServerTransport, SSEServerTransport).
+   * 
+   * @param response - The Response object to send
+   * @param requestId - The ID of the request this response is for
+   * @throws {Error} If the response cannot be sent (e.g., headers already sent)
+   * 
+   * @example
+   * ```typescript
+   * // In a tool handler
+   * throw new Response('Unauthorized', {
+   *   status: 401,
+   *   headers: { 'WWW-Authenticate': 'Bearer realm="api"' }
+   * });
+   * ```
+   */
+  sendHttpResponse?(response: Response, requestId: RequestId): Promise<void>;
 }

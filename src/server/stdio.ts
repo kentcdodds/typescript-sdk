@@ -21,6 +21,8 @@ export class StdioServerTransport implements Transport {
   onclose?: () => void;
   onerror?: (error: Error) => void;
   onmessage?: (message: JSONRPCMessage) => void;
+  
+  readonly supportsHttpResponses = false; // STDIO doesn't support HTTP responses
 
   // Arrow functions to bind `this` properly, while maintaining function identity.
   _ondata = (chunk: Buffer) => {

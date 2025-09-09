@@ -450,9 +450,32 @@ export class StreamableHTTPClientTransport implements Transport {
         }
 
         const text = await response.text().catch(() => null);
-        throw new Error(
+        
+        // Create a custom error that preserves the full response
+        // This allows clients to access the complete HTTP response details
+        // including status code, headers, and body when tools throw Response objects
+        const error = new Error(
           `Error POSTing to endpoint (HTTP ${response.status}): ${text}`,
-        );
+        ) as Error & {
+          /** The original Response object thrown by the tool */
+          response: Response;
+          /** HTTP status code */
+          status: number;
+          /** HTTP status text */
+          statusText: string;
+          /** Response headers */
+          headers: Headers;
+          /** Response body as text */
+          body: string | null;
+        };
+        
+        error.response = response;
+        error.status = response.status;
+        error.statusText = response.statusText;
+        error.headers = response.headers;
+        error.body = text;
+        
+        throw error;
       }
 
       // If the response is 202 Accepted, there's no body to process

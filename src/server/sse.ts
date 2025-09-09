@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { IncomingMessage, ServerResponse } from "node:http";
 import { Transport } from "../shared/transport.js";
-import { JSONRPCMessage, JSONRPCMessageSchema, MessageExtraInfo, RequestInfo } from "../types.js";
+import { JSONRPCMessage, JSONRPCMessageSchema, MessageExtraInfo, RequestId, RequestInfo } from "../types.js";
 import getRawBody from "raw-body";
 import contentType from "content-type";
 import { AuthInfo } from "./auth/types.js";
@@ -44,6 +44,8 @@ export class SSEServerTransport implements Transport {
   onclose?: () => void;
   onerror?: (error: Error) => void;
   onmessage?: (message: JSONRPCMessage, extra?: MessageExtraInfo) => void;
+  
+  readonly supportsHttpResponses = true;
 
   /**
    * Creates a new SSE server transport, which will direct the client to POST messages to the relative or absolute URL identified by `_endpoint`.
@@ -198,6 +200,46 @@ export class SSEServerTransport implements Transport {
     this._sseResponse?.end();
     this._sseResponse = undefined;
     this.onclose?.();
+  }
+
+  /**
+   * Sends an HTTP response directly to the client.
+   * Converts a Response object to an HTTP response with proper status codes and headers.
+   * 
+   * @param response - The Response object to send
+   * @param requestId - The ID of the request this response is for
+   * @throws {Error} If no SSE response is available
+   * @throws {Error} If headers have already been sent
+   */
+  async sendHttpResponse(response: Response, requestId: RequestId): Promise<void> {
+    if (!this._sseResponse) {
+      throw new Error(`No SSE response available for request ${requestId}`);
+    }
+    
+    if (this._sseResponse.headersSent) {
+      throw new Error(`Headers already sent for request ${requestId}`);
+    }
+    
+    // Convert Response object to HTTP response
+    const body = await response.text();
+    const headers: Record<string, string | string[] | undefined> = {};
+    
+    // Copy headers from Response object
+    response.headers.forEach((value, key) => {
+      if (headers[key]) {
+        if (Array.isArray(headers[key])) {
+          headers[key].push(value);
+        } else {
+          headers[key] = [headers[key], value];
+        }
+      } else {
+        headers[key] = value;
+      }
+    });
+    
+    // Send the HTTP response directly
+    this._sseResponse.writeHead(response.status, headers);
+    this._sseResponse.end(body);
   }
 
   async send(message: JSONRPCMessage): Promise<void> {

@@ -134,6 +134,7 @@ export class StreamableHTTPServerTransport implements Transport {
   private _streamMapping: Map<string, ServerResponse> = new Map();
   private _requestToStreamMapping: Map<RequestId, string> = new Map();
   private _requestResponseMap: Map<RequestId, JSONRPCMessage> = new Map();
+  private _originalRequestMap: Map<RequestId, JSONRPCMessage> = new Map();
   private _initialized: boolean = false;
   private _enableJsonResponse: boolean = false;
   private _standaloneSseStreamId: string = '_GET_stream';
@@ -148,6 +149,8 @@ export class StreamableHTTPServerTransport implements Transport {
   onclose?: () => void;
   onerror?: (error: Error) => void;
   onmessage?: (message: JSONRPCMessage, extra?: MessageExtraInfo) => void;
+  
+  readonly supportsHttpResponses = true;
 
   constructor(options: StreamableHTTPServerTransportOptions) {
     this.sessionIdGenerator = options.sessionIdGenerator;
@@ -490,10 +493,13 @@ export class StreamableHTTPServerTransport implements Transport {
           this.onmessage?.(message, { authInfo, requestInfo });
         }
       } else if (hasRequests) {
-        // The default behavior is to use SSE streaming
-        // but in some cases server will return JSON responses
-        const streamId = randomUUID();
-        if (!this._enableJsonResponse) {
+        // Check if this is a batch request (multiple requests)
+        const requestCount = messages.filter(isJSONRPCRequest).length;
+        const isBatchRequest = requestCount > 1;
+        
+        // For initialization requests and batch requests, immediately set up SSE streaming
+        // Single requests should not send headers yet - let the send() method decide
+        if ((isInitializationRequest || isBatchRequest) && !this._enableJsonResponse) {
           const headers: Record<string, string> = {
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
@@ -507,12 +513,17 @@ export class StreamableHTTPServerTransport implements Transport {
 
           res.writeHead(200, headers);
         }
+        
+        // For all requests, set up stream mapping
+        const streamId = randomUUID();
         // Store the response for this request to send messages back through this connection
         // We need to track by request ID to maintain the connection
         for (const message of messages) {
           if (isJSONRPCRequest(message)) {
             this._streamMapping.set(streamId, res);
             this._requestToStreamMapping.set(message.id, streamId);
+            // Store the original request method to determine response type later
+            this._originalRequestMap.set(message.id, message);
           }
         }
         // Set up close handler for client disconnects
@@ -652,7 +663,66 @@ export class StreamableHTTPServerTransport implements Transport {
     this.onclose?.();
   }
 
+  /**
+   * Sends an HTTP response directly to the client.
+   * Converts a Response object to an HTTP response with proper status codes and headers.
+   * 
+   * @param response - The Response object to send
+   * @param requestId - The ID of the request this response is for
+   * @throws {Error} If no stream mapping exists for the request
+   * @throws {Error} If no HTTP response is found for the stream
+   * @throws {Error} If headers have already been sent
+   */
+  async sendHttpResponse(response: Response, requestId: RequestId): Promise<void> {
+    const streamId = this._requestToStreamMapping.get(requestId);
+    if (!streamId) {
+      throw new Error(`No stream mapping found for request ${requestId}`);
+    }
+    
+    const httpResponse = this._streamMapping.get(streamId);
+    if (!httpResponse) {
+      throw new Error(`No HTTP response found for stream ${streamId}`);
+    }
+
+    if (httpResponse.headersSent) {
+      throw new Error(`Headers already sent for request ${requestId}`);
+    }
+    
+    // Convert Response object to HTTP response
+    const body = await response.text();
+    const headers: Record<string, string | string[] | undefined> = {};
+    
+    // Copy headers from Response object
+    response.headers.forEach((value, key) => {
+      if (headers[key]) {
+        if (Array.isArray(headers[key])) {
+          headers[key].push(value);
+        } else {
+          headers[key] = [headers[key], value];
+        }
+      } else {
+        headers[key] = value;
+      }
+    });
+    
+    // Ensure we have a content type - default to text/plain if not set
+    if (!headers['content-type']) {
+      headers['content-type'] = 'text/plain';
+    }
+    
+    
+    // Send the HTTP response directly
+    httpResponse.writeHead(response.status, headers);
+    httpResponse.end(body);
+    
+    // Clean up the connection
+    this._requestResponseMap.delete(requestId);
+    this._requestToStreamMapping.delete(requestId);
+    this._streamMapping.delete(streamId);
+  }
+
   async send(message: JSONRPCMessage, options?: { relatedRequestId?: RequestId }): Promise<void> {
+    console.log('send method called for:', isJSONRPCRequest(message) ? message.method : 'response', isJSONRPCRequest(message) ? message.id : (message as any).id);
     let requestId = options?.relatedRequestId;
     if (isJSONRPCResponse(message) || isJSONRPCError(message)) {
       // If the message is a response, use the request ID from the message
@@ -718,8 +788,27 @@ export class StreamableHTTPServerTransport implements Transport {
         if (!response) {
           throw new Error(`No connection established for request ID: ${String(requestId)}`);
         }
-        if (this._enableJsonResponse) {
-          // All responses ready, send as JSON
+        // All requests after initialization should use JSON responses
+        // SSE stream is only for server-initiated messages (notifications, progress, etc.)
+        // Check if this is an initialization response by looking at the original request
+        const isInitializationResponse = relatedIds.some(id => {
+          const originalRequest = this._originalRequestMap.get(id);
+          return originalRequest && isJSONRPCRequest(originalRequest) && originalRequest.method === 'initialize';
+        });
+        
+        // Check if this is a batch request (multiple requests)
+        const isBatchRequest = relatedIds.length > 1;
+        
+        // Check if headers have already been sent (for initialization requests)
+        const headersAlreadySent = response.headersSent;
+        
+        // Use SSE for initialization requests and batch requests, JSON for single non-initialization requests
+        const shouldUseSSE = isInitializationResponse || (isBatchRequest && !this._enableJsonResponse);
+
+        console.log({shouldUseSSE, headersAlreadySent, _enableJsonResponse: this._enableJsonResponse});
+        
+        if (this._enableJsonResponse || !shouldUseSSE) {
+          // Send as JSON response
           const headers: Record<string, string> = {
             'Content-Type': 'application/json',
           };
@@ -730,20 +819,55 @@ export class StreamableHTTPServerTransport implements Transport {
           const responses = relatedIds
             .map(id => this._requestResponseMap.get(id)!);
 
-          response.writeHead(200, headers);
+          if (!headersAlreadySent) {
+            response.writeHead(200, headers);
+          }
+          
           if (responses.length === 1) {
             response.end(JSON.stringify(responses[0]));
           } else {
             response.end(JSON.stringify(responses));
           }
         } else {
+          // This is an SSE response (initialization or batch)
+          if (!headersAlreadySent) {
+            // Send SSE headers
+            const headers: Record<string, string> = {
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache",
+              Connection: "keep-alive",
+            };
+            if (this.sessionId !== undefined) {
+              headers["mcp-session-id"] = this.sessionId;
+            }
+            response.writeHead(200, headers);
+          }
+          
+          // Send responses as SSE events
+          const responses = relatedIds
+            .map(id => this._requestResponseMap.get(id)!);
+          
+          for (const resp of responses) {
+            this.writeSSEEvent(response, resp);
+          }
+          
           // End the SSE stream
           response.end();
         }
-        // Clean up
+        // Clean up - get stream IDs before deleting request mappings
+        const relatedStreamIds = new Set(relatedIds.map(id => this._requestToStreamMapping.get(id)).filter(Boolean));
+        
         for (const id of relatedIds) {
           this._requestResponseMap.delete(id);
           this._requestToStreamMapping.delete(id);
+          this._originalRequestMap.delete(id);
+        }
+        
+        // Clean up stream mapping for all related stream IDs
+        for (const streamId of relatedStreamIds) {
+          if (streamId) {
+            this._streamMapping.delete(streamId);
+          }
         }
       }
     }

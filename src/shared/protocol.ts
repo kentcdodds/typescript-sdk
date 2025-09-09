@@ -428,6 +428,11 @@ export abstract class Protocol<
             return;
           }
 
+          // Check if this is an HTTP response
+          if (error instanceof Response) {
+            return this._handleHttpResponse(error, request.id, capturedTransport);
+          }
+
           return capturedTransport?.send({
             jsonrpc: "2.0",
             id: request.id,
@@ -446,6 +451,65 @@ export abstract class Protocol<
       .finally(() => {
         this._requestHandlerAbortControllers.delete(request.id);
       });
+  }
+
+  /**
+   * Handles Response objects thrown by request handlers.
+   * Routes to HTTP transports for direct HTTP responses, or converts to JSON-RPC errors for non-HTTP transports.
+   * 
+   * @param response - The Response object thrown by the handler
+   * @param requestId - The ID of the request this response is for
+   * @param transport - The transport to send the response through
+   * @private
+   */
+  private async _handleHttpResponse(
+    response: Response,
+    requestId: RequestId,
+    transport?: Transport
+  ): Promise<void> {
+    // Check if transport supports HTTP responses
+    if (transport?.supportsHttpResponses && transport.sendHttpResponse) {
+      try {
+        await transport.sendHttpResponse(response, requestId);
+        return;
+      } catch (error) {
+        this._onerror(new Error(`Failed to send HTTP response for request ${requestId}: ${error instanceof Error ? error.message : String(error)}`));
+        return;
+      }
+    }
+    
+    // For non-HTTP transports, convert to descriptive error
+    const body = await response.text();
+    const headers: Record<string, string | string[] | undefined> = {};
+
+    // Copy headers from Response object
+    response.headers.forEach((value, key) => {
+      if (headers[key]) {
+        if (Array.isArray(headers[key])) {
+          headers[key].push(value);
+        } else {
+          headers[key] = [headers[key], value];
+        }
+      } else {
+        headers[key] = value;
+      }
+    });
+    
+    return transport?.send({
+      jsonrpc: "2.0",
+      id: requestId,
+      error: {
+        code: response.status,
+        message: `HTTP ${response.status}: ${response.statusText}`,
+        data: {
+          status: response.status,
+          statusText: response.statusText,
+          headers,
+          body,
+          originalHttpResponse: true,
+        },
+      },
+    });
   }
 
   private _onprogress(notification: ProgressNotification): void {

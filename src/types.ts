@@ -1,6 +1,10 @@
 import { z, ZodTypeAny } from "zod";
 import { AuthInfo } from "./server/auth/types.js";
 
+// Re-export HTTP response error types
+export type { HttpResponseError } from "./types/http-response-error.js";
+export { isHttpResponseError, extractHttpErrorInfo } from "./types/http-response-error.js";
+
 export const LATEST_PROTOCOL_VERSION = "2025-06-18";
 export const DEFAULT_NEGOTIATED_PROTOCOL_VERSION = "2025-03-26";
 export const SUPPORTED_PROTOCOL_VERSIONS = [
